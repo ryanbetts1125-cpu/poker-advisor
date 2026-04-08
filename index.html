@@ -139,8 +139,23 @@
 </div>
 
 <script>
-const GEMINI_API_KEY = "AIzaSyC4XJl6fOzoOYgOB0oh39p8wVjaGZ7tcYM";
-const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`;
+// API key stored in browser localStorage — never in code
+function getApiKey() {
+    return localStorage.getItem("gemini_api_key");
+}
+
+function promptForApiKey() {
+    const key = window.prompt("Enter your Gemini API key:");
+    if (key && key.trim()) {
+        localStorage.setItem("gemini_api_key", key.trim());
+        return key.trim();
+    }
+    return null;
+}
+
+function getGeminiUrl(key) {
+    return `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${key}`;
+}
 
 const video      = document.getElementById("video");
 const canvas     = document.getElementById("canvas");
@@ -208,6 +223,15 @@ The hero's hole cards are at the bottom center of the screen. Community cards ar
 If you cannot read a card clearly, use "??" for that card.`;
 
 async function analyze() {
+    let apiKey = getApiKey();
+    if (!apiKey) {
+        apiKey = promptForApiKey();
+        if (!apiKey) {
+            statusEl.textContent = "API key required — tap Analyze to enter it";
+            return;
+        }
+    }
+
     btn.disabled = true;
     btn.textContent = "ANALYZING...";
     statusEl.textContent = "Sending to Gemini...";
@@ -216,7 +240,7 @@ async function analyze() {
     const imageData = captureFrame();
 
     try {
-        const response = await fetch(GEMINI_URL, {
+        const response = await fetch(getGeminiUrl(apiKey), {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -299,6 +323,17 @@ function parseAndDisplay(text) {
 // ── Init ──────────────────────────────────────────────────────────────────────
 
 btn.addEventListener("click", analyze);
+
+// Long press analyze button to reset API key
+let pressTimer;
+btn.addEventListener("touchstart", () => {
+    pressTimer = setTimeout(() => {
+        localStorage.removeItem("gemini_api_key");
+        statusEl.textContent = "API key cleared — tap Analyze to re-enter";
+    }, 2000);
+});
+btn.addEventListener("touchend", () => clearTimeout(pressTimer));
+
 startCamera();
 </script>
 </body>
