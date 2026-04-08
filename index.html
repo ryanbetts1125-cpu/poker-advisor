@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Poker Advisor</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            background: #0a0a0a;
+            color: #fff;
+            font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+            height: 100dvh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        #camera-container {
+            flex: 1;
+            position: relative;
+            overflow: hidden;
+            background: #000;
+        }
+
+        #video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        /* Overlay flash when capturing */
+        #flash {
+            position: absolute;
+            inset: 0;
+            background: white;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.1s;
+        }
+
+        #canvas { display: none; }
+
+        /* Bottom panel */
+        #panel {
+            background: #111;
+            padding: 12px 16px 24px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        /* Result card */
+        #result {
+            background: #1c1c1c;
+            border-radius: 14px;
+            padding: 14px 16px;
+            display: none;
+            border-left: 4px solid #555;
+        }
+
+        #result.fold  { border-left-color: #e74c3c; }
+        #result.call  { border-left-color: #3498db; }
+        #result.raise { border-left-color: #2ecc71; }
+        #result.check { border-left-color: #f39c12; }
+
+        #action-label {
+            font-size: 30px;
+            font-weight: 800;
+            letter-spacing: 1px;
+            margin-bottom: 4px;
+        }
+
+        #result.fold  #action-label { color: #e74c3c; }
+        #result.call  #action-label { color: #3498db; }
+        #result.raise #action-label { color: #2ecc71; }
+        #result.check #action-label { color: #f39c12; }
+
+        #game-state {
+            font-size: 12px;
+            color: #888;
+            margin-bottom: 6px;
+            line-height: 1.4;
+        }
+
+        #reason {
+            font-size: 13px;
+            color: #ccc;
+            line-height: 1.5;
+        }
+
+        /* Analyze button */
+        #analyze-btn {
+            width: 100%;
+            padding: 17px;
+            background: #2ecc71;
+            color: #000;
+            font-size: 18px;
+            font-weight: 800;
+            border: none;
+            border-radius: 14px;
+            cursor: pointer;
+            letter-spacing: 1px;
+            transition: background 0.15s, transform 0.1s;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        #analyze-btn:active { transform: scale(0.97); }
+
+        #analyze-btn:disabled {
+            background: #333;
+            color: #666;
+        }
+
+        #status {
+            font-size: 12px;
+            color: #555;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+
+<div id="camera-container">
+    <video id="video" autoplay playsinline muted></video>
+    <div id="flash"></div>
+    <canvas id="canvas"></canvas>
+</div>
+
+<div id="panel">
+    <div id="result">
+        <div id="game-state"></div>
+        <div id="action-label"></div>
+        <div id="reason"></div>
+    </div>
+    <div id="status">Starting camera...</div>
+    <button id="analyze-btn" disabled>ANALYZE HAND</button>
+</div>
+
+<script>
+const GEMINI_API_KEY = "AIzaSyC4XJl6fOzoOYgOB0oh39p8wVjaGZ7tcYM";
+const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`;
+
+const video      = document.getElementById("video");
+const canvas     = document.getElementById("canvas");
+const flash      = document.getElementById("flash");
+const btn        = document.getElementById("analyze-btn");
+const resultDiv  = document.getElementById("result");
+const actionEl   = document.getElementById("action-label");
+const gameEl     = document.getElementById("game-state");
+const reasonEl   = document.getElementById("reason");
+const statusEl   = document.getElementById("status");
+
+// ── Camera ────────────────────────────────────────────────────────────────────
+
+async function startCamera() {
+    try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+            video: {
+                facingMode: "environment",
+                width:  { ideal: 1920 },
+                height: { ideal: 1080 },
+            },
+            audio: false,
+        });
+        video.srcObject = stream;
+        video.addEventListener("loadedmetadata", () => {
+            statusEl.textContent = "Point camera at poker table and tap Analyze";
+            btn.disabled = false;
+        });
+    } catch (e) {
+        statusEl.textContent = "Camera error — allow camera access and reload";
+        console.error(e);
+    }
+}
+
+// ── Capture ───────────────────────────────────────────────────────────────────
+
+function captureFrame() {
+    canvas.width  = video.videoWidth;
+    canvas.height = video.videoHeight;
+    canvas.getContext("2d").drawImage(video, 0, 0);
+    // Flash effect
+    flash.style.opacity = "0.6";
+    setTimeout(() => flash.style.opacity = "0", 150);
+    return canvas.toDataURL("image/jpeg", 0.90).split(",")[1];
+}
+
+// ── Gemini call ───────────────────────────────────────────────────────────────
+
+const PROMPT = `You are an expert Texas Hold'em poker coach providing real-time GTO advice.
+
+Analyze this poker table screenshot carefully and respond in EXACTLY this format — no extra text:
+
+HOLE_CARDS: [e.g. Ah Kd]
+BOARD: [e.g. 7c 8d 2h | or "none" if preflop]
+STREET: [Preflop / Flop / Turn / River]
+POT: [amount]
+HERO_STACK: [amount]
+POSITION: [BTN / CO / HJ / MP / UTG / SB / BB]
+TO_CALL: [amount or "0" if checking]
+ACTION: [FOLD / CALL / RAISE / CHECK]
+AMOUNT: [if raising, the total raise amount — otherwise "n/a"]
+REASON: [one concise sentence explaining the GTO reasoning]
+
+The hero's hole cards are at the bottom center of the screen. Community cards are in the middle. Use standard poker notation (A=Ace, K=King, Q=Queen, J=Jack, T=Ten, suits: h/d/c/s).
+If you cannot read a card clearly, use "??" for that card.`;
+
+async function analyze() {
+    btn.disabled = true;
+    btn.textContent = "ANALYZING...";
+    statusEl.textContent = "Sending to Gemini...";
+    resultDiv.style.display = "none";
+
+    const imageData = captureFrame();
+
+    try {
+        const response = await fetch(GEMINI_URL, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                contents: [{
+                    parts: [
+                        { text: PROMPT },
+                        { inline_data: { mime_type: "image/jpeg", data: imageData } }
+                    ]
+                }],
+                generationConfig: {
+                    temperature: 0.1,
+                    maxOutputTokens: 300,
+                }
+            })
+        });
+
+        const data = await response.json();
+
+        if (data.candidates?.[0]?.content?.parts?.[0]?.text) {
+            parseAndDisplay(data.candidates[0].content.parts[0].text);
+            statusEl.textContent = "Tap to analyze again";
+        } else if (data.error) {
+            statusEl.textContent = "API error: " + data.error.message;
+        } else {
+            statusEl.textContent = "Unexpected response — try again";
+            console.log(data);
+        }
+
+    } catch (e) {
+        statusEl.textContent = "Network error — check connection";
+        console.error(e);
+    }
+
+    btn.disabled = false;
+    btn.textContent = "ANALYZE HAND";
+}
+
+// ── Parse response ────────────────────────────────────────────────────────────
+
+function parseAndDisplay(text) {
+    const get = (key) => {
+        const m = text.match(new RegExp(`${key}:\\s*(.+)`, "i"));
+        return m ? m[1].trim() : null;
+    };
+
+    const holeCards = get("HOLE_CARDS") || "??";
+    const board     = get("BOARD")      || "none";
+    const street    = get("STREET")     || "";
+    const pot       = get("POT")        || "?";
+    const stack     = get("HERO_STACK") || "?";
+    const position  = get("POSITION")  || "?";
+    const toCall    = get("TO_CALL")    || "0";
+    const action    = get("ACTION")     || "?";
+    const amount    = get("AMOUNT")     || "n/a";
+    const reason    = get("REASON")     || text;
+
+    // Game state summary line
+    const boardStr = board.toLowerCase() === "none" ? "Preflop" : board;
+    gameEl.textContent = `${holeCards}  |  ${boardStr}  |  Pot: ${pot}  |  ${position}  |  Stack: ${stack}`;
+
+    // Action display
+    const act = action.toUpperCase();
+    let actionText = act;
+    if ((act === "RAISE") && amount !== "n/a") actionText = `RAISE to ${amount}`;
+
+    actionEl.textContent = actionText;
+    reasonEl.textContent = reason;
+
+    // Color coding
+    const cls = act === "FOLD" ? "fold"
+              : act === "CALL" ? "call"
+              : act === "RAISE" ? "raise"
+              : act === "CHECK" ? "check"
+              : "";
+
+    resultDiv.className = cls;
+    resultDiv.style.display = "block";
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+
+btn.addEventListener("click", analyze);
+startCamera();
+</script>
+</body>
+</html>
